@@ -20,13 +20,14 @@ type Msg struct {
 
 type Center struct {
 	storage map[string]reflect.Type
-	instances []interface{}
+	instances []reflect.Value
 	mutex sync.Mutex
 	id uint16
 }
 
 func NewCenter() Center {
-	return Center{storage:make(map[string]reflect.Type,32),instances:make([]interface{},32)}
+	num := 32
+	return Center{storage:make(map[string]reflect.Type,num),instances:make([]reflect.Value,num)}
 }
 
 func (c *Center) addService(name string,t reflect.Type) {
@@ -43,19 +44,31 @@ func (c *Center) setup(name string) {
 
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
-	if c.id >= 0xFFFF-1 {
+	if c.id >= 0xFF-1 {
 		panic("over max id")
 	}
 	c.id++
-	c.instances[c.id] = reflect.New(c.storage[name]).Interface()
+	c.instances[c.id] = reflect.New(c.storage[name])
+	initMethod := c.instances[c.id].MethodByName("Init")
+	if initMethod.IsValid() {
+		param := make([]reflect.Value,0)
+		ret := initMethod.Call(param)
+		if !ret[0].IsNil() {
+			panic("setup failed")
+		}
+	} else {
+		panic("Init Method invalid")
+	}
 }
 
 var defaultCenter Center
 
-func Init() {
+func init() {
 	defaultCenter = NewCenter()
 	slog := new(Slog)
 	slua := new(Slua)
 	defaultCenter.addService("slog",reflect.TypeOf(*slog))
 	defaultCenter.addService("slua",reflect.TypeOf(*slua))
+	defaultCenter.setup("slog")
+	defaultCenter.setup("slua")
 }
