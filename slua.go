@@ -13,9 +13,9 @@ func (s *Slua) Name() string {
 	return "slua"
 }
 
-func (s *Slua) Open() Slua {
-	l := luar.Init()
-	return Slua{L:l}
+func (s *Slua) Init() error {
+	s.L = luar.Init()
+	return nil
 }
 
 func (s *Slua) Close() error {

@@ -9,20 +9,21 @@ type Slog struct {
 }
 
 func (s *Slog) Name() string {
-	return "logger"
+	return "slog"
 }
 
-func (s *Slog) Open() Slog {
+func (s *Slog) Init() error {
 	file,err := os.OpenFile("/tmp/penny.log",os.O_WRONLY | os.O_CREATE ,0644)
 	if err != nil {
-		panic(err)
+		return err
 	}
-	l := log.New(file,"[test]",log.Ldate | log.Ltime | log.Lshortfile)
-	return Slog{l:l}
+	s.l = log.New(file,"[test]",log.Ldate | log.Ltime | log.Lshortfile)
+	return nil
 }
 
-func (s *Slog) Close() {
+func (s *Slog) Close() error {
 	s.l.Println("logger service shutdown")
+	return nil
 }
 
 func (s *Slog) Call(m Msg) error {
