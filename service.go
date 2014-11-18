@@ -18,46 +18,49 @@ type Msg struct {
 	data []byte
 }
 
-type Center struct {
-	storage map[string]reflect.Type
-	instances []reflect.Value
+type Cell struct {
+	name string
+	rtype reflect.Type
+	rvalue []reflect.Value
+	mq chan Msg
 	mutex sync.Mutex
-	id uint16
+}
+
+type Center struct {
+	storage map[string]Cell
 }
 
 func NewCenter() Center {
 	num := 32
-	return Center{storage:make(map[string]reflect.Type,num),instances:make([]reflect.Value,num)}
+	return Center{storage:make(map[string]Cell,num)}
 }
 
 func (c *Center) addService(name string,t reflect.Type) {
 	if _,ok := c.storage[name]; ok {
 		panic("service exists")
 	}
-	c.storage[name] = t
+	c.storage[name] = Cell{mq:make(chan Msg,10),rvalue:make([]reflect.Value,10),rtype:t,name:name}
 }
 
 func (c *Center) setup(name string) {
-	if _,ok := c.storage[name]; !ok {
+	if cell,ok := c.storage[name]; !ok {
 		panic("service not exists")
-	}
-
-	c.mutex.Lock()
-	defer c.mutex.Unlock()
-	if c.id >= 0xFF-1 {
-		panic("over max id")
-	}
-	c.id++
-	c.instances[c.id] = reflect.New(c.storage[name])
-	initMethod := c.instances[c.id].MethodByName("Init")
-	if initMethod.IsValid() {
-		param := make([]reflect.Value,0)
-		ret := initMethod.Call(param)
-		if !ret[0].IsNil() {
-			panic("setup failed")
-		}
 	} else {
-		panic("Init Method invalid")
+		cell.mutex.Lock()
+		defer cell.mutex.Lock()
+
+		instance := reflect.New(cell.rtype)
+		initMethod := instance.MethodByName("Init")
+		if initMethod.IsValid() {
+			param := make([]reflect.Value,0)
+			ret := initMethod.Call(param)
+			if !ret[0].IsNil() {
+				panic("setup failed")
+			}
+		} else {
+			panic("Init Method invalid")
+		}
+		cell.rvalue = append(cell.rvalue,instance)
 	}
 }
 
