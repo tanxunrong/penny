@@ -14,8 +14,8 @@ type Service interface {
 }
 
 type Msg struct {
-	source uint32
-	session int
+	source string
+	dest string
 	data []byte
 }
 
@@ -30,11 +30,11 @@ type Cell struct {
 
 type Center struct {
 	storage map[string]Cell
+	gmq chan Msg
 }
 
 func NewCenter() Center {
-	num := 32
-	return Center{storage:make(map[string]Cell,num)}
+	return Center{storage:make(map[string]Cell,32),gmq:make(chan Msg,100)}
 }
 
 //TODO two suggested length is two verbose.
@@ -106,6 +106,16 @@ func (c *Center) setup(name string) reflect.Value {
 			panic("Init Method invalid")
 		}
 		return instance
+	}
+}
+
+func (c *Center) dispatch() {
+	for ;; {
+		m := <-c.gmq
+		if serv,ok := c.storage[m.dest]; ok {
+			serv.mq <-m
+		}
+		//TODO have no service named m.dest
 	}
 }
 
