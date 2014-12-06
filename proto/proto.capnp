@@ -2,6 +2,8 @@ using Go = import "go.capnp";
 
 $Go.package("proto");
 
+$Go.import("penny/proto");
+
 @0xde88b0bd250ca57a;
 
 struct Item {
