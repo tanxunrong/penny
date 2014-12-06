@@ -3,6 +3,7 @@ package penny
 import (
 	lua "github.com/aarzilli/golua/lua"
 	luar "github.com/stevedonovan/luar"
+	proto "./proto"
 )
 
 type Slua struct {
@@ -23,6 +24,6 @@ func (s *Slua) Close() error {
 	return nil
 }
 
-func (s *Slua) Call(m Msg) {
-	s.L.DoString(string(m.data))
+func (s *Slua) Call(m proto.Msg) {
+	s.L.DoString(string(m.From()))
 }

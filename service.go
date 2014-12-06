@@ -11,6 +11,10 @@ import (
 	"reflect"
 	"sync"
 	"sync/atomic"
+	"bytes"
+	"time"
+	proto "./proto"
+	capn "github.com/glycerine/go-capnproto"
 )
 
 type Config struct {
@@ -34,14 +38,8 @@ func parse(file string) (*Config, error) {
 type Service interface {
 	Name() string
 	Init() error
-	Call(m Msg) error
+	Call(m proto.Msg) error
 	Close()
-}
-
-type Msg struct {
-	source string
-	dest   string
-	data   []byte
 }
 
 type Entry struct {
@@ -49,13 +47,13 @@ type Entry struct {
 	item_type reflect.Type
 	items     []reflect.Value
 	reqn      int64
-	mq        chan Msg
+	mq        chan proto.Msg
 	mutex     sync.Mutex
 }
 
 type Dock struct {
 	storage map[string]Entry
-	gmq     chan Msg
+	gmq     chan proto.Msg
 	client  *etcd.Client
 	harbor  *net.TCPAddr
 	handle  *net.TCPListener
@@ -91,7 +89,7 @@ func NewDock(conf *Config) (*Dock, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Dock{storage: make(map[string]Entry, 32), gmq: make(chan Msg, 100), client: client, harbor: addr, handle: handle}, nil
+	return &Dock{storage: make(map[string]Entry, 32), gmq: make(chan proto.Msg, 100), client: client, harbor: addr, handle: handle }, nil
 }
 
 //TODO two suggested length is two verbose.
@@ -100,7 +98,7 @@ func (c *Dock) addService(name string, t reflect.Type, mqlen, instance_num int) 
 		panic("service exists")
 	}
 
-	c.storage[name] = Entry{mq: make(chan Msg, mqlen), items: make([]reflect.Value, instance_num), item_type: t, name: name}
+	c.storage[name] = Entry{mq: make(chan proto.Msg, mqlen), items: make([]reflect.Value, instance_num), item_type: t, name: name}
 	go c.run(name)
 }
 
@@ -125,7 +123,7 @@ func (c *Dock) run(name string) {
 	}
 }
 
-func callService(serv Entry, idx int64, rv reflect.Value, m Msg) {
+func callService(serv Entry, idx int64, rv reflect.Value, m proto.Msg) {
 	//TODO mutex while calling the service instance
 	callMethod := rv.MethodByName("Call")
 	param := []reflect.Value{reflect.ValueOf(m)}
@@ -170,10 +168,36 @@ func (c *Dock) setup(name string) reflect.Value {
 func (c *Dock) dispatch() {
 	for {
 		m := <-c.gmq
-		if serv, ok := c.storage[m.dest]; ok {
+		if serv, ok := c.storage[m.From()]; ok {
 			serv.mq <- m
 		}
 		//TODO have no service named m.dest
+	}
+}
+
+func (c *Dock) accept() {
+	for {
+		conn,err := c.handle.AcceptTCP()
+		if err != nil {
+			continue
+		}
+		go c.readMsg(conn)
+	}
+}
+
+func (c *Dock) readMsg(conn *net.TCPConn) {
+	conn.SetKeepAlivePeriod(time.Hour)
+	defer conn.Close()
+
+	buf := bytes.NewBuffer(make([]byte,1024*10))
+	for {
+		seg,err := capn.ReadFromStream(conn,buf)
+		if err != nil {
+			panic(err)
+		}
+		msg := proto.NewMsg(seg)
+		msg.SetPass( msg.Pass() + 1 )
+		c.gmq <- msg
 	}
 }
 
@@ -192,4 +216,6 @@ func init() {
 	slua := new(Slua)
 	defaultDock.addService("slog", reflect.TypeOf(*slog), 10, 1)
 	defaultDock.addService("slua", reflect.TypeOf(*slua), 100, 10)
+	go defaultDock.accept()
+	go defaultDock.dispatch()
 }

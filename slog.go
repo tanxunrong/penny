@@ -2,6 +2,7 @@ package penny
 import (
 	"log"
 	"os"
+	proto "./proto"
 )
 
 type Slog struct {
@@ -26,7 +27,6 @@ func (s *Slog) Close() error {
 	return nil
 }
 
-func (s *Slog) Call(m Msg) error {
-	s.l.Println(string(m.data))
+func (s *Slog) Call(m proto.Msg) error {
 	return nil
 }
