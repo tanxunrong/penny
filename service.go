@@ -1,10 +1,35 @@
 package penny
 
 import (
+	"errors"
+	"github.com/BurntSushi/toml"
+	"github.com/coreos/go-etcd/etcd"
+	"io/ioutil"
+	"log"
+	"net"
+	"os"
+	"reflect"
 	"sync"
 	"sync/atomic"
-	"reflect"
 )
+
+type Config struct {
+	machines []string
+	log      string
+	addr     string
+}
+
+func parse(file string) (*Config, error) {
+	content, err := ioutil.ReadFile(file)
+	if err != nil {
+		return nil, err
+	}
+	var conf Config
+	if _, parse_err := toml.Decode(string(content), &conf); parse_err != nil {
+		return nil, parse_err
+	}
+	return &conf, nil
+}
 
 type Service interface {
 	Name() string
@@ -15,59 +40,92 @@ type Service interface {
 
 type Msg struct {
 	source string
-	dest string
-	data []byte
+	dest   string
+	data   []byte
 }
 
-type Cell struct {
-	name string
-	rtype reflect.Type
-	rvalue []reflect.Value
-	reqn int64
-	mq chan Msg
-	mutex sync.Mutex
+type Entry struct {
+	name      string
+	item_type reflect.Type
+	items     []reflect.Value
+	reqn      int64
+	mq        chan Msg
+	mutex     sync.Mutex
 }
 
-type Center struct {
-	storage map[string]Cell
-	gmq chan Msg
+type Dock struct {
+	storage map[string]Entry
+	gmq     chan Msg
+	client  *etcd.Client
+	harbor  *net.TCPAddr
+	handle  *net.TCPListener
 }
 
-func NewCenter() Center {
-	return Center{storage:make(map[string]Cell,32),gmq:make(chan Msg,100)}
+func NewDock(conf *Config) (*Dock, error) {
+	file, err := os.Open(conf.log)
+	if err != nil {
+		return nil, err
+	}
+	etcd.SetLogger(log.New(file, "[test]", log.LstdFlags|log.Lshortfile))
+
+	client := etcd.NewClient(conf.machines)
+	res, err := client.Get("services", true, true)
+	if err != nil {
+		if _, cerr := client.CreateDir("services", 0); cerr != nil {
+			return nil, err
+		}
+		res, err = client.Get("services", true, true)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if !res.Node.Dir {
+		return nil, errors.New("service is not a dir")
+	}
+
+	addr, err := net.ResolveTCPAddr("tcp", conf.addr)
+	if err != nil {
+		return nil, err
+	}
+	handle, err := net.ListenTCP("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	return &Dock{storage: make(map[string]Entry, 32), gmq: make(chan Msg, 100), client: client, harbor: addr, handle: handle}, nil
 }
 
 //TODO two suggested length is two verbose.
-func (c *Center) addService(name string,t reflect.Type,mqlen,instance_num int) {
-	if _,ok := c.storage[name]; ok {
+func (c *Dock) addService(name string, t reflect.Type, mqlen, instance_num int) {
+	if _, ok := c.storage[name]; ok {
 		panic("service exists")
 	}
-	c.storage[name] = Cell{mq:make(chan Msg,mqlen),rvalue:make([]reflect.Value,instance_num),rtype:t,name:name}
+
+	c.storage[name] = Entry{mq: make(chan Msg, mqlen), items: make([]reflect.Value, instance_num), item_type: t, name: name}
 	go c.run(name)
 }
 
 // run service
-func (c *Center) run(name string) {
-	serv,ok := c.storage[name]
+func (c *Dock) run(name string) {
+	serv, ok := c.storage[name]
 	if !ok {
 		panic("service not exists")
 	}
-	for ;; {
+	for {
 		//TODO better load balance
-		cur := atomic.AddInt64(&serv.reqn,1)
-		idx := cur % int64(len(serv.rvalue))
-		rv := serv.rvalue[idx]
+		cur := atomic.AddInt64(&serv.reqn, 1)
+		idx := cur % int64(len(serv.items))
+		rv := serv.items[idx]
 		if rv.IsNil() {
 			rv = c.setup(name)
-			serv.rvalue[idx] = rv
+			serv.items[idx] = rv
 		}
 
 		m := <-serv.mq
-		go callService(serv,idx,rv,m)
+		go callService(serv, idx, rv, m)
 	}
 }
 
-func callService(serv Cell,idx int64,rv reflect.Value,m Msg) {
+func callService(serv Entry, idx int64, rv reflect.Value, m Msg) {
 	//TODO mutex while calling the service instance
 	callMethod := rv.MethodByName("Call")
 	param := []reflect.Value{reflect.ValueOf(m)}
@@ -83,21 +141,21 @@ func callService(serv Cell,idx int64,rv reflect.Value,m Msg) {
 			panic("close failed")
 		}
 		//TODO nicer remove instance
-		serv.rvalue[int(idx)] = reflect.ValueOf(nil)
+		serv.items[int(idx)] = reflect.ValueOf(nil)
 	}
 }
 
-func (c *Center) setup(name string) reflect.Value {
-	if cell,ok := c.storage[name]; !ok {
+func (c *Dock) setup(name string) reflect.Value {
+	if cell, ok := c.storage[name]; !ok {
 		panic("service not exists")
 	} else {
 		cell.mutex.Lock()
 		defer cell.mutex.Unlock()
 
-		instance := reflect.New(cell.rtype)
+		instance := reflect.New(cell.item_type)
 		initMethod := instance.MethodByName("Init")
 		if initMethod.IsValid() {
-			param := make([]reflect.Value,0)
+			param := make([]reflect.Value, 0)
 			ret := initMethod.Call(param)
 			if !ret[0].IsNil() {
 				panic("setup failed")
@@ -109,22 +167,29 @@ func (c *Center) setup(name string) reflect.Value {
 	}
 }
 
-func (c *Center) dispatch() {
-	for ;; {
+func (c *Dock) dispatch() {
+	for {
 		m := <-c.gmq
-		if serv,ok := c.storage[m.dest]; ok {
-			serv.mq <-m
+		if serv, ok := c.storage[m.dest]; ok {
+			serv.mq <- m
 		}
 		//TODO have no service named m.dest
 	}
 }
 
-var defaultCenter Center
+var defaultDock Dock
 
 func init() {
-	defaultCenter = NewCenter()
+	conf, err := parse("./conf.toml")
+	if err != nil {
+		panic(err)
+	}
+	defaultDock, err := NewDock(conf)
+	if err != nil {
+		panic(err)
+	}
 	slog := new(Slog)
 	slua := new(Slua)
-	defaultCenter.addService("slog",reflect.TypeOf(*slog),10,1)
-	defaultCenter.addService("slua",reflect.TypeOf(*slua),100,10)
+	defaultDock.addService("slog", reflect.TypeOf(*slog), 10, 1)
+	defaultDock.addService("slua", reflect.TypeOf(*slua), 100, 10)
 }
