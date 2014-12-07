@@ -93,17 +93,17 @@ func NewDock(conf *Config) (*Dock, error) {
 }
 
 //TODO two suggested length is two verbose.
-func (c *Dock) addService(name string, t reflect.Type, mqlen, instance_num int) {
+func (c *Dock) AddService(name string, t reflect.Type, mqlen, instance_num int) {
 	if _, ok := c.storage[name]; ok {
 		panic("service exists")
 	}
 
 	c.storage[name] = Entry{mq: make(chan proto.Msg, mqlen), items: make([]reflect.Value, instance_num), item_type: t, name: name}
-	go c.run(name)
+	go c.start(name)
 }
 
-// run service
-func (c *Dock) run(name string) {
+// start service
+func (c *Dock) start(name string) {
 	serv, ok := c.storage[name]
 	if !ok {
 		panic("service not exists")
@@ -179,26 +179,44 @@ func (c *Dock) accept() {
 	for {
 		conn,err := c.handle.AcceptTCP()
 		if err != nil {
+			//TODO log the handing error
 			continue
 		}
 		go c.readMsg(conn)
 	}
 }
 
+// Read msg from other dock instance.
 func (c *Dock) readMsg(conn *net.TCPConn) {
-	conn.SetKeepAlivePeriod(time.Hour)
 	defer conn.Close()
 
+	err := conn.SetKeepAlivePeriod(time.Hour)
+	if err != nil {
+		panic(err)
+	}
+
+	// 10k read buffer
 	buf := bytes.NewBuffer(make([]byte,1024*10))
 	for {
 		seg,err := capn.ReadFromStream(conn,buf)
 		if err != nil {
 			panic(err)
 		}
-		msg := proto.NewMsg(seg)
+		msg := proto.ReadRootMsg(seg)
+		// since readRootMsg doesn't return error,we need test it
+		if len(msg.Method()) == 0 {
+			continue
+		}
+
+		// inc pass by 1.so we know if some pkg transfer how many times
 		msg.SetPass( msg.Pass() + 1 )
 		c.gmq <- msg
 	}
+}
+
+func (c *Dock) Run() {
+	go defaultDock.accept()
+	go defaultDock.dispatch()
 }
 
 var defaultDock Dock
@@ -214,8 +232,7 @@ func init() {
 	}
 	slog := new(Slog)
 	slua := new(Slua)
-	defaultDock.addService("slog", reflect.TypeOf(*slog), 10, 1)
-	defaultDock.addService("slua", reflect.TypeOf(*slua), 100, 10)
-	go defaultDock.accept()
-	go defaultDock.dispatch()
+	defaultDock.AddService("slog", reflect.TypeOf(*slog), 10, 1)
+	defaultDock.AddService("slua", reflect.TypeOf(*slua), 100, 10)
+	defaultDock.Run()
 }
