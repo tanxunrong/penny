@@ -87,11 +87,12 @@ func NewDock(conf *Config) (*Dock, error) {
 	}
 
 	d := Dock{ remote: make(map[string]Remote, 100), local: make(map[string]Entry, 32), gmq: make(chan proto.Msg, 100), client: client, harbor_addr: addr, harbor: harbor}
+	go d.accept()
+
 	return &d, nil
 }
 
 func (d *Dock) GetRemotes() map[string]Remote {
-	println("client %v",d.client)
 	if d.client == nil {
 		panic(errors.New("client empty"))
 	}
@@ -122,27 +123,29 @@ func (d *Dock) AddService(name string, t reflect.Type, mqlen, instance_num int) 
 	}
 
 	r := d.GetRemotes()
-	if _, ok := r[name]; ok {
-		panic("service exist in remote")
-	}
-	remote := new(Remote)
-	remote.Addr = d.harbor_addr.String()
-	b, err := json.Marshal(remote)
-	if err != nil {
-		panic(err)
-	}
 
-	key := strings.Join([]string{"services/", name}, "")
-	_, err = d.client.Create(key, string(b), 0)
-	if err != nil {
-		panic(err)
-	}
+	key := strings.Join([]string{"/services/", name}, "")
+	if _ , ok := r[key]; ok {
+		if r[key].Addr != d.harbor_addr.String() {
+			panic("service exist in remote")
+		}
+	} else {
+		remote := new(Remote)
+		remote.Addr = d.harbor_addr.String()
+		b, err := json.Marshal(remote)
+		if err != nil {
+			panic(err)
+		}
 
-	d.remote = d.GetRemotes()
+		_, err = d.client.Create(key, string(b), 0)
+		if err != nil {
+			panic(err)
+		}
+	}
 
 	serv := Entry{mq: make(chan proto.Msg, mqlen), items: make([]reflect.Value, instance_num),locks:make([]sync.Mutex,instance_num), item_type: t, name: name}
 
-	d.local[name] = serv
+	d.local[key] = serv
 	go serv.start()
 }
 
@@ -204,9 +207,13 @@ func setup(tp reflect.Type) reflect.Value {
 	return instance
 }
 
-func (d *Dock) dispatch() {
+func (d *Dock) Dispatch() {
 	for {
 		m := <-d.gmq
+		if m.Pass() > 100 {
+			panic(errors.New("pass > 100"))
+		}
+
 		call := m.From()
 		if serv, ok := d.local[call]; ok {
 			serv.mq <- m
@@ -282,19 +289,14 @@ func (d *Dock) readMsg(conn *net.TCPConn) {
 	}
 }
 
-// the default dock.
-// usually one dock is enough.
-var DefaultDock Dock
-
 // start the default dock.
 // path is the config file.
-func Run(path string) {
+func Run(path string) *Dock {
 	conf := ParseConfig(path)
-	DefaultDock, err := NewDock(conf)
+	dock, err := NewDock(conf)
 	if err != nil {
 		panic(err)
 	}
 
-	go DefaultDock.accept()
-	go DefaultDock.dispatch()
+	return dock
 }
