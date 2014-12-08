@@ -13,14 +13,16 @@ import (
 	"sync/atomic"
 	"bytes"
 	"time"
+	"encoding/json"
+	"strings"
 	proto "./proto"
 	capn "github.com/glycerine/go-capnproto"
 )
 
 type Config struct {
-	machines []string
-	log      string
-	addr     string
+	Machines []string
+	Log      string
+	Addr     string
 }
 
 func parse(file string) (*Config, error) {
@@ -51,7 +53,12 @@ type Entry struct {
 	mutex     sync.Mutex
 }
 
+type Remote struct {
+	Addr string `json:"Addr"`
+}
+
 type Dock struct {
+	remote  *map[string]Remote
 	storage map[string]Entry
 	gmq     chan proto.Msg
 	client  *etcd.Client
@@ -60,28 +67,24 @@ type Dock struct {
 }
 
 func NewDock(conf *Config) (*Dock, error) {
-	file, err := os.Open(conf.log)
+	file, err := os.OpenFile(conf.Log,os.O_WRONLY | os.O_APPEND,0666)
 	if err != nil {
-		return nil, err
+		panic(err)
 	}
 	etcd.SetLogger(log.New(file, "[test]", log.LstdFlags|log.Lshortfile))
 
-	client := etcd.NewClient(conf.machines)
-	res, err := client.Get("services", true, true)
+	client := etcd.NewClient(conf.Machines)
+	res, err := client.Get("services", true, false)
 	if err != nil {
-		if _, cerr := client.CreateDir("services", 0); cerr != nil {
-			return nil, err
-		}
-		res, err = client.Get("services", true, true)
-		if err != nil {
-			return nil, err
+		if res, err = client.CreateDir("services", 0); err != nil {
+			panic(err)
 		}
 	}
 	if !res.Node.Dir {
 		return nil, errors.New("service is not a dir")
 	}
 
-	addr, err := net.ResolveTCPAddr("tcp", conf.addr)
+	addr, err := net.ResolveTCPAddr("tcp", conf.Addr)
 	if err != nil {
 		return nil, err
 	}
@@ -89,22 +92,66 @@ func NewDock(conf *Config) (*Dock, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Dock{storage: make(map[string]Entry, 32), gmq: make(chan proto.Msg, 100), client: client, harbor: addr, handle: handle }, nil
+
+	d := &Dock{storage: make(map[string]Entry, 32), gmq: make(chan proto.Msg, 100), client: client, harbor: addr, handle: handle }
+	r := d.GetRemotes()
+	d.remote = &r
+	return d,nil
+}
+
+func (d *Dock) GetRemotes() map[string]Remote {
+	res, err := d.client.Get("services", true, true)
+	if err != nil {
+		panic(err)
+	}
+	count := len(res.Node.Nodes)
+	remote := make(map[string]Remote,count)
+	for i:=0;i<count;i++ {
+		name := res.Node.Nodes[i].Key
+		value := res.Node.Nodes[i].Value
+		var r Remote
+		decoder := json.NewDecoder(strings.NewReader(value))
+		if err := decoder.Decode(&r); err != nil {
+			panic(err)
+		}
+		remote[name] = r
+	}
+	return remote
 }
 
 //TODO two suggested length is two verbose.
-func (c *Dock) AddService(name string, t reflect.Type, mqlen, instance_num int) {
-	if _, ok := c.storage[name]; ok {
+func (d *Dock) AddService(name string, t reflect.Type, mqlen, instance_num int) {
+	if _, ok := d.storage[name]; ok {
 		panic("service exists")
 	}
 
-	c.storage[name] = Entry{mq: make(chan proto.Msg, mqlen), items: make([]reflect.Value, instance_num), item_type: t, name: name}
-	go c.start(name)
+	r := d.GetRemotes()
+	if _,ok := r[name]; ok {
+		panic("service exist in remote")
+	}
+	remote := Remote{Addr:d.harbor.String()}
+	b,err := json.Marshal(remote)
+	if err != nil {
+		panic(err)
+	}
+
+	key := strings.Join([]string{"services/",name},"")
+	_,err = d.client.Create(key,string(b),10)
+	if err != nil {
+		panic(err)
+	}
+
+	r = d.GetRemotes()
+	d.remote = &r
+
+	d.storage[name] = Entry{mq: make(chan proto.Msg, mqlen), items: make([]reflect.Value, instance_num), item_type: t, name: name}
+
+	go d.start(name)
 }
 
 // start service
-func (c *Dock) start(name string) {
-	serv, ok := c.storage[name]
+func (d *Dock) start(name string) {
+	serv, ok := d.storage[name]
 	if !ok {
 		panic("service not exists")
 	}
@@ -113,8 +160,8 @@ func (c *Dock) start(name string) {
 		cur := atomic.AddInt64(&serv.reqn, 1)
 		idx := cur % int64(len(serv.items))
 		rv := serv.items[idx]
-		if rv.IsNil() {
-			rv = c.setup(name)
+		if rv.IsValid() {
+			rv = d.setup(name)
 			serv.items[idx] = rv
 		}
 
@@ -143,8 +190,8 @@ func callService(serv Entry, idx int64, rv reflect.Value, m proto.Msg) {
 	}
 }
 
-func (c *Dock) setup(name string) reflect.Value {
-	if cell, ok := c.storage[name]; !ok {
+func (d *Dock) setup(name string) reflect.Value {
+	if cell, ok := d.storage[name]; !ok {
 		panic("service not exists")
 	} else {
 		cell.mutex.Lock()
@@ -165,29 +212,29 @@ func (c *Dock) setup(name string) reflect.Value {
 	}
 }
 
-func (c *Dock) dispatch() {
+func (d *Dock) dispatch() {
 	for {
-		m := <-c.gmq
-		if serv, ok := c.storage[m.From()]; ok {
+		m := <-d.gmq
+		if serv, ok := d.storage[m.From()]; ok {
 			serv.mq <- m
 		}
 		//TODO have no service named m.dest
 	}
 }
 
-func (c *Dock) accept() {
+func (d *Dock) accept() {
 	for {
-		conn,err := c.handle.AcceptTCP()
+		conn,err := d.handle.AcceptTCP()
 		if err != nil {
 			//TODO log the handing error
 			continue
 		}
-		go c.readMsg(conn)
+		go d.readMsg(conn)
 	}
 }
 
 // Read msg from other dock instance.
-func (c *Dock) readMsg(conn *net.TCPConn) {
+func (d *Dock) readMsg(conn *net.TCPConn) {
 	defer conn.Close()
 
 	err := conn.SetKeepAlivePeriod(time.Hour)
@@ -210,29 +257,27 @@ func (c *Dock) readMsg(conn *net.TCPConn) {
 
 		// inc pass by 1.so we know if some pkg transfer how many times
 		msg.SetPass( msg.Pass() + 1 )
-		c.gmq <- msg
+		d.gmq <- msg
 	}
 }
 
-func (c *Dock) Run() {
-	go defaultDock.accept()
-	go defaultDock.dispatch()
+func (d *Dock) Run() {
+	go DefaultDock.accept()
+	go DefaultDock.dispatch()
 }
 
-var defaultDock Dock
+var DefaultDock Dock
 
 func init() {
 	conf, err := parse("./conf.toml")
 	if err != nil {
 		panic(err)
 	}
-	defaultDock, err := NewDock(conf)
+	DefaultDock, err := NewDock(conf)
 	if err != nil {
 		panic(err)
 	}
 	slog := new(Slog)
-	slua := new(Slua)
-	defaultDock.AddService("slog", reflect.TypeOf(*slog), 10, 1)
-	defaultDock.AddService("slua", reflect.TypeOf(*slua), 100, 10)
-	defaultDock.Run()
+	DefaultDock.AddService("slog", reflect.TypeOf(*slog), 10, 1)
+	DefaultDock.Run()
 }
