@@ -29,11 +29,9 @@ func main() {
 	params := proto.NewParamList(seg,0)
 	sendMsg.SetParams(params)
 
-	for {
-		_,err := seg.WriteTo(conn)
-		if err != nil {
-			panic(err)
-		}
-		conn.Write([]byte{0})
+	size,err := seg.WriteTo(conn)
+	if err != nil {
+		panic(err)
 	}
+	println("write bytes",size)
 }
