@@ -1,8 +1,9 @@
 package penny
+
 import (
+	proto "./proto"
 	"log"
 	"os"
-	proto "./proto"
 )
 
 type Slog struct {
@@ -14,11 +15,11 @@ func (s *Slog) Name() string {
 }
 
 func (s *Slog) Init() error {
-	file,err := os.OpenFile("/tmp/penny.log",os.O_WRONLY | os.O_CREATE ,0644)
+	file, err := os.OpenFile("/tmp/penny.log", os.O_WRONLY|os.O_CREATE, 0644)
 	if err != nil {
 		return err
 	}
-	s.l = log.New(file,"[test]",log.Ldate | log.Ltime | log.Lshortfile)
+	s.l = log.New(file, "[test]", log.Ldate|log.Ltime|log.Lshortfile)
 	return nil
 }
 

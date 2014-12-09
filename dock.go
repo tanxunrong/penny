@@ -2,18 +2,18 @@ package penny
 
 import (
 	proto "./proto"
-	"github.com/coreos/go-etcd/etcd"
-	capn "github.com/glycerine/go-capnproto"
 	"bytes"
 	"encoding/json"
 	"errors"
+	"github.com/coreos/go-etcd/etcd"
+	capn "github.com/glycerine/go-capnproto"
+	"io"
 	"log"
 	"net"
 	"os"
 	"reflect"
 	"strings"
 	"sync"
-	"io"
 	"time"
 )
 
@@ -27,9 +27,9 @@ type Dock struct {
 }
 
 type Remote struct {
-	Addr string `json:"Addr"`
-	mutex sync.Mutex `json:"-"`
-	conn *net.TCPConn `json:"-"`
+	Addr  string       `json:"Addr"`
+	mutex sync.Mutex   `json:"-"`
+	conn  *net.TCPConn `json:"-"`
 }
 
 func NewDock(conf *Config) (*Dock, error) {
@@ -68,7 +68,7 @@ func NewDock(conf *Config) (*Dock, error) {
 		return nil, err
 	}
 
-	d := Dock{ remote: make(map[string]Remote, 100), local: make(map[string]Entry, 32), gmq: make(chan proto.Msg, 100), client: client, harbor_addr: addr, harbor: harbor}
+	d := Dock{remote: make(map[string]Remote, 100), local: make(map[string]Entry, 32), gmq: make(chan proto.Msg, 100), client: client, harbor_addr: addr, harbor: harbor}
 	go d.accept()
 
 	return &d, nil
@@ -107,8 +107,8 @@ func (d *Dock) AddService(name string, t reflect.Type, mqlen, instance_num int) 
 	r := d.GetRemotes()
 
 	key := strings.Join([]string{"/services/", name}, "")
-	println("key",key)
-	if _ , ok := r[key]; ok {
+	println("key", key)
+	if _, ok := r[key]; ok {
 		if r[key].Addr != d.harbor_addr.String() {
 			panic("service exist in remote")
 		}
@@ -126,7 +126,7 @@ func (d *Dock) AddService(name string, t reflect.Type, mqlen, instance_num int) 
 		}
 	}
 
-	serv := Entry{mq: make(chan proto.Msg, mqlen), items: make([]reflect.Value, instance_num),locks:make([]sync.Mutex,instance_num), item_type: t, name: name}
+	serv := Entry{mq: make(chan proto.Msg, mqlen), items: make([]reflect.Value, instance_num), locks: make([]sync.Mutex, instance_num), item_type: t, name: name}
 
 	d.local[key] = serv
 	go serv.start()
@@ -150,11 +150,11 @@ func (d *Dock) Dispatch() {
 
 			remote.mutex.Lock()
 			if remote.conn == nil {
-				addr,err := net.ResolveTCPAddr("tcp",remote.Addr)
+				addr, err := net.ResolveTCPAddr("tcp", remote.Addr)
 				if err != nil {
 					panic(err)
 				}
-				remote.conn,err = net.DialTCP("tcp",nil,addr)
+				remote.conn, err = net.DialTCP("tcp", nil, addr)
 				if err != nil {
 					panic(err)
 				}
@@ -170,7 +170,7 @@ func (d *Dock) Dispatch() {
 			sendMsg.SetMethod(m.Method())
 			sendMsg.SetParams(m.Params())
 
-			if _,err := seg.WriteTo(remote.conn);err != nil {
+			if _, err := seg.WriteTo(remote.conn); err != nil {
 				panic(err)
 			}
 
@@ -201,14 +201,14 @@ func (d *Dock) readMsg(conn *net.TCPConn) {
 		panic(err)
 	}
 
-	buf := make([]byte,1024*10)
+	buf := make([]byte, 1024*10)
 	capn_buf := bytes.NewBuffer(make([]byte, 1024*10))
 
 	for {
 
 		i := 0
 		for {
-			size,err := conn.Read(buf[i:])
+			size, err := conn.Read(buf[i:])
 			if err == io.EOF {
 				break
 			} else if err != nil {
@@ -221,7 +221,7 @@ func (d *Dock) readMsg(conn *net.TCPConn) {
 		if i == 0 {
 			goto END
 		}
-		println("read size",i)
+		println("read size", i)
 
 		cont := bytes.NewReader(buf[:i])
 		seg, err := capn.ReadFromStream(cont, capn_buf)
@@ -233,11 +233,11 @@ func (d *Dock) readMsg(conn *net.TCPConn) {
 		if len(msg.Method()) == 0 {
 			panic(errors.New("field method is empty"))
 		}
-		println("msg detail",msg.From(),msg.Dest())
+		println("msg detail", msg.From(), msg.Dest())
 
 		d.gmq <- msg
 	}
-	END:
+END:
 	println("conn close")
 	return
 }

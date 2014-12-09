@@ -1,9 +1,9 @@
 package penny
 
 import (
+	proto "./proto"
 	lua "github.com/aarzilli/golua/lua"
 	luar "github.com/stevedonovan/luar"
-	proto "./proto"
 )
 
 type Slua struct {
@@ -25,6 +25,6 @@ func (s *Slua) Close() error {
 }
 
 func (s *Slua) Call(m proto.Msg) error {
-	println("from",string(m.From()))
+	println("from", string(m.From()))
 	return nil
 }

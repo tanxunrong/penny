@@ -5,5 +5,5 @@ import (
 )
 
 func TestInit(t *testing.T) {
-	Run("/home/tanxr/workspace/penny/conf.toml");
+	Run("/home/tanxr/workspace/penny/conf.toml")
 }

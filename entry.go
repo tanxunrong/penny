@@ -11,7 +11,7 @@ type Entry struct {
 	name      string
 	item_type reflect.Type
 	items     []reflect.Value
-	locks	  []sync.Mutex
+	locks     []sync.Mutex
 	reqn      int64
 	mq        chan proto.Msg
 	mutex     sync.Mutex
@@ -74,4 +74,3 @@ func setup(tp reflect.Type) reflect.Value {
 	}
 	return instance
 }
-
