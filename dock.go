@@ -2,7 +2,6 @@ package penny
 
 import (
 	proto "./proto"
-	"bytes"
 	"encoding/json"
 	"errors"
 	"github.com/coreos/go-etcd/etcd"
@@ -107,7 +106,7 @@ func (d *Dock) AddService(name string, t reflect.Type, mqlen, instance_num int) 
 	r := d.GetRemotes()
 
 	key := strings.Join([]string{"/services/", name}, "")
-	println("key", key)
+	println("Add services named", key)
 	if _, ok := r[key]; ok {
 		if r[key].Addr != d.harbor_addr.String() {
 			panic("service exist in remote")
@@ -202,7 +201,6 @@ func (d *Dock) readMsg(conn *net.TCPConn) {
 	}
 
 	buf := make([]byte, 1024*10)
-	capn_buf := bytes.NewBuffer(make([]byte, 1024*10))
 
 	for {
 
@@ -221,23 +219,21 @@ func (d *Dock) readMsg(conn *net.TCPConn) {
 		if i == 0 {
 			goto END
 		}
-		println("read size", i)
 
-		cont := bytes.NewReader(buf[:i])
-		seg, err := capn.ReadFromStream(cont, capn_buf)
+		seg, size, err := capn.ReadFromMemoryZeroCopy(buf)
 		if err != nil {
 			panic(err)
 		}
+		buf = buf[size:]
+
 		msg := proto.ReadRootMsg(seg)
 		// since readRootMsg doesn't return error,we need test it
 		if len(msg.Method()) == 0 {
 			panic(errors.New("field method is empty"))
 		}
-		println("msg detail", msg.From(), msg.Dest())
 
 		d.gmq <- msg
 	}
 END:
-	println("conn close")
 	return
 }
