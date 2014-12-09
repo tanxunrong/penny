@@ -1,15 +1,39 @@
 package main
 
 import (
-	"reflect"
-	penny "../"
+	"time"
+	proto "../proto"
+	capn "github.com/glycerine/go-capnproto"
+	"net"
 )
-func main() {
-	dock := penny.Run("/home/tanxr/workspace/penny/conf.toml")
-	slua := new(penny.Slua)
-	dock.AddService("slua", reflect.TypeOf(*slua), 100, 10)
 
-	slog := new(penny.Slog)
-	dock.AddService("slog", reflect.TypeOf(*slog), 10, 1)
-	dock.Dispatch()
+func main() {
+
+	addr,err := net.ResolveTCPAddr("tcp","192.168.28.147:5501")
+	if err != nil {
+		panic(err)
+	}
+	conn,err := net.DialTCP("tcp",nil,addr)
+	if err != nil {
+		panic(err)
+	}
+	defer conn.Close()
+	conn.SetKeepAlivePeriod(time.Minute * 10);
+
+	seg := capn.NewBuffer(nil)
+	sendMsg := proto.NewRootMsg(seg)
+	sendMsg.SetFrom("penny test")
+	sendMsg.SetDest("/services/slua")
+	sendMsg.SetPass(0)
+	sendMsg.SetMethod("test_method")
+	params := proto.NewParamList(seg,0)
+	sendMsg.SetParams(params)
+
+	for {
+		_,err := seg.WriteTo(conn)
+		if err != nil {
+			panic(err)
+		}
+		conn.Write([]byte{0})
+	}
 }
