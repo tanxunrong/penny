@@ -2,17 +2,18 @@ package penny
 
 import (
 	proto "./proto"
+	"github.com/coreos/go-etcd/etcd"
+	capn "github.com/glycerine/go-capnproto"
 	"bytes"
 	"encoding/json"
 	"errors"
-	"github.com/coreos/go-etcd/etcd"
-	capn "github.com/glycerine/go-capnproto"
 	"log"
 	"net"
 	"os"
 	"reflect"
 	"strings"
 	"sync"
+	"io"
 	"sync/atomic"
 	"time"
 )
@@ -22,7 +23,7 @@ type Service interface {
 	Name() string
 	Init() error
 	Call(m proto.Msg) error
-	Close()
+	Close() error
 }
 
 type Entry struct {
@@ -125,6 +126,7 @@ func (d *Dock) AddService(name string, t reflect.Type, mqlen, instance_num int) 
 	r := d.GetRemotes()
 
 	key := strings.Join([]string{"/services/", name}, "")
+	println("key",key)
 	if _ , ok := r[key]; ok {
 		if r[key].Addr != d.harbor_addr.String() {
 			panic("service exist in remote")
@@ -214,11 +216,14 @@ func (d *Dock) Dispatch() {
 			panic(errors.New("pass > 100"))
 		}
 
-		call := m.From()
+		call := m.Dest()
 		if serv, ok := d.local[call]; ok {
+			println("send to local")
 			serv.mq <- m
+			continue
 		}
 		if remote, ok := d.remote[call]; ok {
+			println("send to remote")
 
 			remote.mutex.Lock()
 			if remote.conn == nil {
@@ -246,7 +251,10 @@ func (d *Dock) Dispatch() {
 				panic(err)
 			}
 
+			continue
+
 		}
+		println("send to nowhere")
 	}
 }
 
@@ -265,15 +273,35 @@ func (d *Dock) accept() {
 func (d *Dock) readMsg(conn *net.TCPConn) {
 	defer conn.Close()
 
-	err := conn.SetKeepAlivePeriod(time.Hour)
+	err := conn.SetKeepAlivePeriod(time.Minute * 10)
 	if err != nil {
 		panic(err)
 	}
 
-	// 10k read buffer
-	buf := bytes.NewBuffer(make([]byte, 1024*10))
+	buf := make([]byte,1024*10)
+	capn_buf := bytes.NewBuffer(make([]byte, 1024*10))
+
 	for {
-		seg, err := capn.ReadFromStream(conn, buf)
+
+		i := 0
+		for {
+			size,err := conn.Read(buf[i:])
+			if err == io.EOF {
+				break
+			} else if err != nil {
+				println(err.Error())
+				goto END
+			} else {
+				i += size
+			}
+		}
+		if i == 0 {
+			goto END
+		}
+		println("read size",i)
+
+		cont := bytes.NewReader(buf[:i])
+		seg, err := capn.ReadFromStream(cont, capn_buf)
 		if err != nil {
 			panic(err)
 		}
@@ -282,11 +310,13 @@ func (d *Dock) readMsg(conn *net.TCPConn) {
 		if len(msg.Method()) == 0 {
 			panic(errors.New("field method is empty"))
 		}
+		println("msg detail",msg.From(),msg.Dest())
 
-		// inc pass by 1.so we know if some pkg transfer how many times
-		msg.SetPass(msg.Pass() + 1)
 		d.gmq <- msg
 	}
+END:
+	println("conn close")
+	return
 }
 
 // start the default dock.

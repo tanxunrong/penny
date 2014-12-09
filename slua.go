@@ -24,6 +24,7 @@ func (s *Slua) Close() error {
 	return nil
 }
 
-func (s *Slua) Call(m proto.Msg) {
-	s.L.DoString(string(m.From()))
+func (s *Slua) Call(m proto.Msg) error {
+	println("from",string(m.From()))
+	return nil
 }
